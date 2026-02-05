@@ -1,28 +1,37 @@
 import User from "../models/userSchema.js";
 import Feedback from "../models/feedbackSchema.js";
 import Course from "../models/courseSchema.js";
-import bcryptjs from "bcryptjs";
+import Visitor from "../models/visitorCounterSchema.js";
 import { generateOTP } from "../utils/generateOTP.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import { otpEmailTemplate } from "../utils/OTPemailTemplates.js";
 import { feedbackEmailTemplate } from "../utils/feedbackEmailTemplate.js";
-const otpStore = {}; // temporary in-memory store
 import passport from "passport";
 
+const otpStore = {}; // Temporary in-memory OTP store
+
+// -------------------- Visitor --------------------
 const homePage = async (req, res) => {
   try {
-    res.status(202).json({ message: "home page" });
+    let counter = await Visitor.findOne({ name: "visitors" });
+    if (!counter) {
+      counter = await Visitor.create({ name: "visitors", count: 1 });
+    } else {
+      counter.count += 1;
+      await counter.save();
+    }
+    res.status(200).json({ visitorCount: counter.count });
   } catch (error) {
     res.status(404).json({ error });
   }
 };
 
+// -------------------- User Auth --------------------
 const regPage = async (req, res) => {
   try {
     const { email, password, phone, username } = req.body;
-    const userExist = await User.findOne({ email: email });
-    if (userExist) {
-      return res.status(400).json({ message: "Email already exist" });
+    if (await User.findOne({ email })) {
+      return res.status(400).json({ message: "Email already exists" });
     }
     const userCreated = await User.create({ email, password, phone, username });
     res.status(201).json({
@@ -39,48 +48,34 @@ const regPage = async (req, res) => {
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const userExist = await User.findOne({ email });
-    if (!userExist) {
-      return res.status(400).json({ message: "Invalid credentials" });
-    }
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
-    const isCorrectPassword = await userExist.comparePassword(password);
-    if (isCorrectPassword) {
-      res.status(200).json({
-        message: "Logged in successfully",
-        token: await userExist.generateToken(),
-        userId: userExist._id.toString(),
-      });
-    } else {
+    const isCorrectPassword = await user.comparePassword(password);
+    if (!isCorrectPassword)
       return res.status(400).json({ message: "Invalid credentials" });
-    }
+
+    res.status(200).json({
+      message: "Logged in successfully",
+      token: await user.generateToken(),
+      userId: user._id.toString(),
+    });
   } catch (error) {
     res.status(500).json({ message: "Internal server error" });
   }
 };
 
+// -------------------- Feedback --------------------
 const contact = async (req, res) => {
   try {
     const { email, message, username } = req.body;
-
-    if (!email || !username || !message) {
+    if (!email || !username || !message)
       return res.status(400).json({ message: "All fields are required" });
-    }
 
-    // Save feedback to DB
     const newMessage = await Feedback.create({ email, username, message });
-    // Build email content
     const { subject, html } = feedbackEmailTemplate(username, message);
+    await sendEmail(email, subject, html);
 
-    // Send confirmation email
-    await sendEmail(
-      email,
-      subject,
-      html,
-      `Hi ${username}, thanks for your feedback: ${message}`
-    );
-
-    // frontend response
     return res.status(201).json({
       success: true,
       message: "Feedback submitted successfully",
@@ -91,10 +86,10 @@ const contact = async (req, res) => {
   }
 };
 
+// -------------------- General --------------------
 const user = async (req, res) => {
   try {
-    const user = req.user;
-    return res.status(200).json({ user });
+    res.status(200).json({ user: req.user });
   } catch (error) {
     res.status(400).json({ message: error });
   }
@@ -102,24 +97,18 @@ const user = async (req, res) => {
 
 const courses = async (req, res) => {
   try {
-    const response = await Course.find({});
-    if (!response) {
-      return res.status(400).json({ message: "Fetching courses error" });
-    }
-    res.status(200).json({ data: response });
+    const data = await Course.find({});
+    res.status(200).json({ data });
   } catch (error) {
     res.status(400).json({ message: `Fetching courses error: ${error}` });
   }
 };
 
 const defcontroller = async (req, res) => {
-  try {
-    res.status(200).json({ message: "hello from def controller" });
-  } catch (error) {
-    res.status(400).json({ message: `Error: ${error}` });
-  }
+  res.status(200).json({ message: "hello from def controller" });
 };
 
+// -------------------- OTP --------------------
 const sendOTP = async (req, res) => {
   try {
     const { email } = req.body;
@@ -130,14 +119,13 @@ const sendOTP = async (req, res) => {
     const { subject, html } = otpEmailTemplate(otp);
 
     await sendEmail(email, subject, html);
-    return res.status(200).json({ message: "OTP sent successfully" });
+    res.status(200).json({ message: "OTP sent successfully" });
   } catch (error) {
     console.error("Error in sendOTP:", error);
-    return res.status(500).json({ message: "Failed to send OTP" });
+    res.status(500).json({ message: "Failed to send OTP" });
   }
 };
 
-// Verify OTP Controller
 const verifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -157,38 +145,38 @@ const verifyOTP = async (req, res) => {
       return res.status(400).json({ message: "Invalid OTP" });
 
     delete otpStore[email];
-    return res.status(200).json({ message: "OTP verified successfully" });
+    res.status(200).json({ message: "OTP verified successfully" });
   } catch (error) {
     console.error("Error in verifyOTP:", error);
-    return res.status(500).json({ message: "Failed to verify OTP" });
+    res.status(500).json({ message: "Failed to verify OTP" });
   }
 };
-// Check if email exists in DB before forgot password reset
+
+// -------------------- Password --------------------
 const forgotPasswordCheck = async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
+    if (!email) return res.status(400).json({ message: "Email is required" });
+
     const userExist = await User.findOne({ email });
-    if (!userExist) {
+    if (!userExist)
       return res.status(404).json({ message: "Email does not exist" });
-    }
-    return res.status(200).json({ message: "Email exists" });
+
+    res.status(200).json({ message: "Email exists" });
   } catch (error) {
     console.error("Error in forgotPasswordCheck:", error);
-    return res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ message: "Internal server error" });
   }
 };
-//Reset Password
+
 const resetPassword = async (req, res) => {
   try {
     const { email, newPassword } = req.body;
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: "User not found" });
 
-    user.password = newPassword; // plain text
-    await user.save(); // hash will happen here
+    user.password = newPassword; // hash handled in schema pre-save
+    await user.save();
 
     res.status(200).json({ message: "Password reset successful" });
   } catch (error) {
@@ -196,9 +184,63 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// -------------------- Social Auth --------------------
 const googleLogin = async (req, res, next) => {
-  try {
-    passport.authenticate("google-login", (err, data, info) => {
+  passport.authenticate("google-login", (err, data, info) => {
+    if (err)
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/login?error=server_error`
+      );
+    if (!data) {
+      const errorMsg = encodeURIComponent(
+        info?.message || "Authentication failed"
+      );
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/login?error=${errorMsg}`
+      );
+    }
+    const { token } = data;
+    res.redirect(`${process.env.FRONTEND_URL}/oauth/callback?token=${token}`);
+  })(req, res, next);
+};
+
+const googleSignup = async (req, res, next) => {
+  passport.authenticate("google-signup", async (err, data, info) => {
+    if (err)
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/signup?error=server_error`
+      );
+    if (!data) {
+      const errorMsg = encodeURIComponent(
+        info?.message || "Authentication failed"
+      );
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/signup?error=${errorMsg}`
+      );
+    }
+
+    try {
+      const userEmail = data.user.email;
+      const forgotPasswordLink = `${process.env.FRONTEND_URL}/forgot-password`;
+      await sendEmail(
+        userEmail,
+        "Welcome to Codify - Set Your Password",
+        `Hi ${
+          data.user.username || "there"
+        }, set your password here: ${forgotPasswordLink}`
+      );
+    } catch (emailError) {
+      console.error("Failed to send welcome email:", emailError);
+    }
+
+    const { token } = data;
+    res.redirect(`${process.env.FRONTEND_URL}/oauth/callback?token=${token}`);
+  })(req, res, next);
+};
+
+const githubAuth = (req, res, next) => {
+  passport.authenticate("github", async (err, data, info) => {
+    try {
       if (err)
         return res.redirect(
           `${process.env.FRONTEND_URL}/login?error=server_error`
@@ -211,59 +253,30 @@ const googleLogin = async (req, res, next) => {
           `${process.env.FRONTEND_URL}/login?error=${errorMsg}`
         );
       }
-      // Upon Successful Login, Redirect URL with token to frontend
-      const { token } = data;
-      res.redirect(`${process.env.FRONTEND_URL}/oauth/callback?token=${token}`);
-    })(req, res, next);
-  } catch (error) {
-    return res.redirect(`${process.env.FRONTEND_URL}/login?error=server_error`);
-  }
-};
-//Google Signup
-const googleSignup = async (req, res, next) => {
-  try {
-    passport.authenticate("google-signup", async (err, data, info) => {
-      if (err)
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/signup?error=server_error`
-        );
-      if (!data) {
-        const errorMsg = encodeURIComponent(
-          info?.message || "Authentication failed"
-        );
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/signup?error=${errorMsg}`
-        );
-      }
-      // Send email reminder to set password
-      try {
-        const userEmail = data.user.email;
-        const forgotPasswordLink = `${process.env.FRONTEND_URL}/forgot-password`;
 
-        await sendEmail(
-          userEmail,
-          "Welcome to Codify - Set Your Password",
-          `Hi ${data.user.username || "there"},\n\n
-          Welcome to Codify! 🎉\n\n
-          Since you signed up using Google, you don’t have a password yet.  
-          You can set one anytime by clicking the link below:\n\n
-          ${forgotPasswordLink}\n\n
-          This will let you log in directly using your email & password as well as Google.\n\n
-          Cheers,  
-          Codify Team`
-        );
-      } catch (emailError) {
-        console.error("Failed to send welcome email:", emailError);
+      const { user, token, isNewUser } = data;
+
+      if (isNewUser) {
+        try {
+          const forgotPasswordLink = `${process.env.FRONTEND_URL}/forgot-password`;
+          await sendEmail(
+            user.email,
+            "Welcome to Codify - Set Your Password",
+            `Hi ${
+              user.username || "there"
+            }, set your password here: ${forgotPasswordLink}`
+          );
+        } catch (emailError) {
+          console.error("Failed to send GitHub welcome email:", emailError);
+        }
       }
-      // Upon Successful Signup, Redirect URL with token to frontend
-      const { token } = data;
+
       res.redirect(`${process.env.FRONTEND_URL}/oauth/callback?token=${token}`);
-    })(req, res, next);
-  } catch (error) {
-    return res.redirect(
-      `${process.env.FRONTEND_URL}/signup?error=server_error`
-    );
-  }
+    } catch (error) {
+      console.error("Error in githubAuth:", error);
+      res.redirect(`${process.env.FRONTEND_URL}/login?error=server_error`);
+    }
+  })(req, res, next);
 };
 
 export {
@@ -280,4 +293,5 @@ export {
   forgotPasswordCheck,
   googleLogin,
   googleSignup,
+  githubAuth,
 };

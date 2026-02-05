@@ -12,7 +12,7 @@ import {
 import authMiddleware from "../middlewares/authMiddleware.js";
 
 const router = express.Router();
-console.log("entered route");
+
 // Question Routes
 router.get("/getAll",authMiddleware, getAllQuestions);          // GET /questions
 router.get("/getOne/:id",authMiddleware, getQuestionById);       // GET /questions/:id
